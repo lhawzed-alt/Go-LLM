@@ -10,26 +10,31 @@ import (
 	"strings"
 	"time"
 
+	"go_llm/internal/cache"
+	"go_llm/internal/optimizer"
 	"go_llm/internal/router"
 )
 
 // Proxy 将 OpenAI 兼容请求转发到上游渠道
 type Proxy struct {
-	Router *router.Router
-	Client *http.Client
+	Router      *router.Router
+	Client      *http.Client
+	RespCache   *cache.Cache // 非流式响应缓存
 }
 
 func New(rt *router.Router) *Proxy {
 	return &Proxy{
-		Router: rt,
-		Client: &http.Client{Timeout: 5 * time.Minute},
+		Router:    rt,
+		Client:    &http.Client{Timeout: 5 * time.Minute},
+		RespCache: cache.New(2048, 30*time.Minute),
 	}
 }
 
-// chatRequest 仅用于提取 model 字段
+// chatRequest 用于提取 model / stream / messages 字段
 type chatRequest struct {
-	Model  string `json:"model"`
-	Stream bool   `json:"stream"`
+	Model    string             `json:"model"`
+	Stream   bool               `json:"stream"`
+	Messages []optimizer.Message `json:"messages"`
 }
 
 // Handler 处理 /v1/chat/completions
@@ -43,6 +48,29 @@ func (p *Proxy) Handler(w http.ResponseWriter, r *http.Request) {
 	if err := json.Unmarshal(body, &req); err != nil || req.Model == "" {
 		httpError(w, http.StatusBadRequest, "无效的请求体或缺少 model 字段")
 		return
+	}
+
+	// 1) 优化消息：清理多余空白 + 注入简洁指令，减少输入/输出 token
+	if len(req.Messages) > 0 {
+		req.Messages = optimizer.OptimizeMessages(req.Messages)
+		var err2 error
+		body, err2 = json.Marshal(req)
+		if err2 != nil {
+			httpError(w, http.StatusInternalServerError, "序列化优化后的请求失败")
+			return
+		}
+	}
+
+	// 2) 非流式请求先查缓存，命中直接返回（提升缓存命中率）
+	cacheKey := cache.Key(req.Model, body)
+	if !req.Stream {
+		if v, ok := p.RespCache.Get(cacheKey); ok {
+			log.Printf("[cache] HIT key=%s rate=%.1f%%", cacheKey[:12], p.RespCache.Stats())
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Cache", "HIT")
+			w.Write(v)
+			return
+		}
 	}
 
 	ch, ok := p.Router.Pick(req.Model)
@@ -83,7 +111,13 @@ func (p *Proxy) Handler(w http.ResponseWriter, r *http.Request) {
 	if req.Stream && resp.StatusCode == http.StatusOK {
 		streamCopy(w, resp.Body)
 	} else {
-		io.Copy(w, resp.Body)
+		respBody, _ := io.ReadAll(resp.Body)
+		w.Write(respBody)
+		// 仅缓存成功的非流式响应
+		if !req.Stream && resp.StatusCode == http.StatusOK {
+			p.RespCache.Set(cacheKey, json.RawMessage(respBody))
+			log.Printf("[cache] MISS key=%s rate=%.1f%%", cacheKey[:12], p.RespCache.Stats())
+		}
 	}
 	log.Printf("[proxy] model=%s channel=%s status=%d stream=%v", req.Model, ch.Name, resp.StatusCode, req.Stream)
 }

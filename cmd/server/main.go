@@ -44,6 +44,12 @@ func main() {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte("ok"))
 	})
+	mux.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"cache_hit_rate_percent": p.RespCache.Stats(),
+		})
+	})
 
 	addr := ":" + itoa(cfg.Server.Port)
 	log.Printf("AI 中转站已启动，监听 %s", addr)
