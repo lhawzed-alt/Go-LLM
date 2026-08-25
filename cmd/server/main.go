@@ -24,6 +24,7 @@ func main() {
 
 	rt := router.NewRouter(cfg.Channels)
 	p := proxy.New(rt)
+	keyStore := auth.NewStore(cfg.Auth.APIKeys)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", p.Handler)
@@ -51,9 +52,37 @@ func main() {
 		})
 	})
 
+	// 管理 API：动态增删客户端 Key（生产环境建议加管理员鉴权）
+	mux.HandleFunc("/admin/keys", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			json.NewEncoder(w).Encode(map[string]any{"keys": keyStore.List()})
+		case http.MethodPost:
+			var body struct{ Key string `json:"key"` }
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Key == "" {
+				http.Error(w, `{"error":"需要 key 字段"}`, http.StatusBadRequest)
+				return
+			}
+			keyStore.Add(body.Key)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"message": "已添加", "masked": keyStore.List()})
+		case http.MethodDelete:
+			var body struct{ Key string `json:"key"` }
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Key == "" {
+				http.Error(w, `{"error":"需要 key 字段"}`, http.StatusBadRequest)
+				return
+			}
+			keyStore.Remove(body.Key)
+			json.NewEncoder(w).Encode(map[string]any{"message": "已删除", "masked": keyStore.List()})
+		default:
+			http.Error(w, `{"error":"不支持的方法"}`, http.StatusMethodNotAllowed)
+		}
+	})
+
 	addr := ":" + itoa(cfg.Server.Port)
 	log.Printf("AI 中转站已启动，监听 %s", addr)
-	log.Fatal(http.ListenAndServe(addr, auth.Middleware(cfg.Auth)(mux)))
+	log.Fatal(http.ListenAndServe(addr, auth.Middleware(keyStore)(mux)))
 }
 
 func itoa(n int) string {
