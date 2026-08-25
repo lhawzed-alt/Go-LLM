@@ -1,0 +1,27 @@
+# AI 模型中转站配置
+server:
+  port: 8080
+
+# 上游渠道配置（支持多个，按模型名路由）
+channels:
+  - name: openai
+    base_url: https://api.openai.com
+    api_key: sk-xxxx
+    models:
+      - gpt-4o
+      - gpt-4o-mini
+      - gpt-3.5-turbo
+    weight: 1
+
+  - name: deepseek
+    base_url: https://api.deepseek.com/v1
+    api_key: sk-xxxx
+    models:
+      - deepseek-v4-flash
+      - deepseek-v4-pro
+    weight: 1
+
+auth:
+  # 客户端访问本网关使用的 API Key 列表；为空则不校验
+  api_keys:
+    - sk-relay-test-key-123
