@@ -1,5 +1,7 @@
 # go_llm — AI 模型中转站
 
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
 使用 Go 实现的 OpenAI 兼容 API 网关（中转站），支持多上游渠道、按模型路由、加权负载均衡、流式（SSE）转发、多用户 API Key 管理和 Token 优化。
 
 ## 功能
@@ -98,3 +100,7 @@ cp config.yaml.example config.yaml
 > `config.yaml` 已被 `.gitignore` 排除，不会被提交到 Git，可放心填写真实 API Key。
 
 上游 `api_key` 建议用环境变量引用：`${OPENAI_API_KEY}`。
+
+## 许可证
+
+本项目基于 [Apache License 2.0](LICENSE) 开源。
