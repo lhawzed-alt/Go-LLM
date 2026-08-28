@@ -68,6 +68,33 @@ curl -X DELETE http://localhost:8080/admin/keys -d '{"key":"sk-user-alice"}'
 
 > ⚠️ `/admin/keys` 目前无鉴权，生产环境请加管理员校验或仅监听内网。
 
+## 图形化控制台
+
+`/client` 目录下是基于 React + Vite + TypeScript + TailwindCSS 的独立管理界面，
+监听 `0.0.0.0:10234`，提供完整 CRUD：
+
+- 服务设置（端口）
+- 上游渠道增删改查
+- 客户端 API Key 增删改查
+- 缓存命中率、运行状态概览
+
+支持跟随系统深浅色，也可在界面手动切换。
+
+启动方式：
+
+```bash
+# 1) 启动后端
+go run ./cmd/server -config config.yaml
+
+# 2) 启动控制台（另一个终端）
+cd client
+npm install
+npm run dev
+```
+
+打开 <http://localhost:10234> 即可。修改后会自动持久化回 `config.yaml`（同时生成
+`config.yaml.bak` 备份），渠道与 Key 变更会立即热更新。
+
 ## 监控
 
 ```bash
@@ -81,12 +108,14 @@ curl http://localhost:8080/healthz
 
 ```
 cmd/server/main.go          # 入口与路由注册
-internal/config/config.go   # YAML 配置加载（支持环境变量）
+cmd/server/helpers.go       # 配置脱敏/合并/备份等辅助
+internal/config/config.go   # YAML 配置加载/保存（支持环境变量）
 internal/router/router.go   # 模型路由 + 加权负载均衡
 internal/proxy/proxy.go     # 核心转发、SSE 流式透传、缓存接入
 internal/auth/auth.go       # 多用户 Key Store 与鉴权中间件
 internal/optimizer/optimizer.go # 消息清理与简洁指令注入
 internal/cache/cache.go     # LRU + TTL 响应缓存
+client/                     # React + Vite + Tailwind 控制台
 ```
 
 ## 配置
