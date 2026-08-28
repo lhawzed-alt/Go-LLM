@@ -5,6 +5,9 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"go_llm/internal/auth"
@@ -25,6 +28,21 @@ func main() {
 	rt := router.NewRouter(cfg.Channels)
 	p := proxy.New(rt)
 	keyStore := auth.NewStore(cfg.Auth.APIKeys)
+
+	// 持有当前配置，支持运行时热更新
+	var (
+		mu   sync.RWMutex
+		curC = cfg
+	)
+
+	// 热更新：重建 router 与 keyStore
+	reload := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		rt.Rebuild(curC.Channels)
+		keyStore.Replace(curC.Auth.APIKeys)
+		log.Printf("[reload] channels=%d keys=%d", len(curC.Channels), len(curC.Auth.APIKeys))
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/chat/completions", p.Handler)
@@ -52,7 +70,7 @@ func main() {
 		})
 	})
 
-	// 管理 API：动态增删客户端 Key（生产环境建议加管理员鉴权）
+	// 管理 API：动态增删客户端 Key
 	mux.HandleFunc("/admin/keys", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.Method {
@@ -80,29 +98,87 @@ func main() {
 		}
 	})
 
-	addr := ":" + itoa(cfg.Server.Port)
+	// 管理 API：完整配置读写（仅内网使用）
+	mux.HandleFunc("/admin/config", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Method {
+		case http.MethodGet:
+			mu.RLock()
+			defer mu.RUnlock()
+			out := maskConfigForRead(curC)
+			json.NewEncoder(w).Encode(out)
+		case http.MethodPut:
+			var incoming config.Config
+			if err := json.NewDecoder(r.Body).Decode(&incoming); err != nil {
+				http.Error(w, `{"error":"JSON 解析失败"}`, http.StatusBadRequest)
+				return
+			}
+			mu.Lock()
+			// 合并：脱敏的 API Key（形如 "sk-xxx****xxxx"）保持原值
+			merged := mergeConfig(curC, &incoming)
+			// 写入磁盘（先备份）
+			if err := backupFile(*cfgPath); err != nil {
+				log.Printf("[warn] 备份配置文件失败: %v", err)
+			}
+			if err := config.Save(*cfgPath, merged); err != nil {
+				mu.Unlock()
+				http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+				return
+			}
+			// 展开环境变量引用
+			for i := range merged.Channels {
+				merged.Channels[i].APIKey = expandEnvLocal(merged.Channels[i].APIKey)
+			}
+			curC = merged
+			mu.Unlock()
+			reload()
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "已保存并热更新",
+				"config":  maskConfigForRead(merged),
+			})
+		default:
+			http.Error(w, `{"error":"不支持的方法"}`, http.StatusMethodNotAllowed)
+		}
+	})
+
+	addr := ":" + strconv.Itoa(cfg.Server.Port)
 	log.Printf("AI 中转站已启动，监听 %s", addr)
-	log.Fatal(http.ListenAndServe(addr, auth.Middleware(keyStore)(mux)))
+	// /admin/*、/healthz、/stats 不走客户端鉴权
+	authedHandler := skipPaths(auth.Middleware(keyStore), []string{"/admin/", "/healthz", "/stats"})(mux)
+	log.Fatal(http.ListenAndServe(addr, withCORS(authedHandler)))
 }
 
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
+// skipPaths 让指定前缀的路径直接放行（不经过鉴权）
+func skipPaths(mw func(http.Handler) http.Handler, prefixes []string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		wrapped := mw(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			for _, p := range prefixes {
+				if strings.HasPrefix(r.URL.Path, p) {
+					next.ServeHTTP(w, r)
+					return
+				}
+				// 同时支持不带结尾斜杠的精确匹配
+				if r.URL.Path == strings.TrimSuffix(p, "/") {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
+			wrapped.ServeHTTP(w, r)
+		})
 	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		b[i] = '-'
-	}
-	return string(b[i:])
+}
+
+// withCORS 允许控制台（任意 Origin）跨域访问管理接口
+func withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

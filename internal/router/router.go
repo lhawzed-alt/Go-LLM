@@ -63,3 +63,16 @@ func (r *Router) Models() []string {
 	}
 	return models
 }
+
+// Rebuild 重建路由表（用于配置热更新）
+func (r *Router) Rebuild(channels []config.Channel) {
+	m := make(map[string][]config.Channel)
+	for _, ch := range channels {
+		for _, model := range ch.Models {
+			m[model] = append(m[model], ch)
+		}
+	}
+	r.mu.Lock()
+	r.modelMap = m
+	r.mu.Unlock()
+}

@@ -68,6 +68,30 @@ func mask(k string) string {
 	return k[:6] + "****" + k[len(k)-4:]
 }
 
+// RawList 返回所有 Key 的完整值（仅供内网管理接口使用）
+func (s *Store) RawList() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]string, 0, len(s.keys))
+	for k := range s.keys {
+		out = append(out, k)
+	}
+	return out
+}
+
+// Replace 全量替换 Key 列表（用于配置热更新）
+func (s *Store) Replace(keys []string) {
+	m := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		if k != "" {
+			m[k] = struct{}{}
+		}
+	}
+	s.mu.Lock()
+	s.keys = m
+	s.mu.Unlock()
+}
+
 // Middleware 基于 Store 的鉴权中间件
 func Middleware(store *Store) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
